@@ -2,6 +2,8 @@
 set -euo pipefail
 
 TARGET_ATTEMPTS="10000"
+TARGET_PATTERN='DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*[0-9]+;'
+TARGET_LINE="DEFAULT_MAX_ATTEMPTS = ${TARGET_ATTEMPTS};"
 
 log() {
   printf '[gemini-patch] %s\n' "$*"
@@ -13,11 +15,11 @@ fail() {
 }
 
 if ! command -v npm >/dev/null 2>&1; then
-  fail "找不到 npm，請先安裝 Node.js / npm。"
+  fail "Cannot find npm. Install Node.js and npm first."
 fi
 
 NPM_ROOT="$(npm root -g 2>/dev/null || true)"
-[ -n "$NPM_ROOT" ] || fail "無法取得 npm 全域路徑（npm root -g）。"
+[ -n "$NPM_ROOT" ] || fail "Cannot detect global npm root (npm root -g)."
 
 RETRY_JS="$NPM_ROOT/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/utils/retry.js"
 RETRY_DTS="$NPM_ROOT/@google/gemini-cli/node_modules/@google/gemini-cli-core/dist/src/utils/retry.d.ts"
@@ -32,25 +34,48 @@ if [ ! -f "$RETRY_DTS" ]; then
   [ -n "$FOUND_DTS" ] && RETRY_DTS="$FOUND_DTS"
 fi
 
-[ -f "$RETRY_JS" ] || fail "找不到 retry.js，請確認已安裝 @google/gemini-cli。"
+[ -f "$RETRY_JS" ] || fail "retry.js not found. Please install @google/gemini-cli first."
 
 STAMP="$(date +%Y%m%d%H%M%S)"
-cp "$RETRY_JS" "$RETRY_JS.bak.$STAMP"
 
-# 將 DEFAULT_MAX_ATTEMPTS 改為指定值
-sed -E -i "s/(DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*)[0-9]+;/\\1${TARGET_ATTEMPTS};/" "$RETRY_JS"
+patch_file() {
+  local file="$1"
+  local tmp
 
+  cp "$file" "$file.bak.$STAMP"
+  tmp="$(mktemp)"
+
+  # Replace only the numeric assignment to avoid group-reference ambiguity.
+  sed -E "s/${TARGET_PATTERN}/${TARGET_LINE}/g" "$file" >"$tmp" || {
+    rm -f "$tmp"
+    fail "Failed to patch: $file"
+  }
+
+  mv "$tmp" "$file"
+
+  if ! grep -Eq "DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*${TARGET_ATTEMPTS};" "$file"; then
+    fail "Verification failed for: $file"
+  fi
+}
+
+patch_file "$RETRY_JS"
 if [ -f "$RETRY_DTS" ]; then
-  cp "$RETRY_DTS" "$RETRY_DTS.bak.$STAMP"
-  sed -E -i "s/(DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*)[0-9]+;/\\1${TARGET_ATTEMPTS};/" "$RETRY_DTS"
+  patch_file "$RETRY_DTS"
+else
+  log "Info: retry.d.ts not found. Skipped."
 fi
 
 log "npm root -g: $NPM_ROOT"
-log "已更新: $RETRY_JS"
-[ -f "$RETRY_DTS" ] && log "已更新: $RETRY_DTS"
+log "Updated: $RETRY_JS"
+[ -f "$RETRY_DTS" ] && log "Updated: $RETRY_DTS"
 
-log "驗證結果:"
-rg -n "DEFAULT_MAX_ATTEMPTS" "$RETRY_JS" || true
-[ -f "$RETRY_DTS" ] && rg -n "DEFAULT_MAX_ATTEMPTS" "$RETRY_DTS" || true
+log "Verification:"
+if command -v rg >/dev/null 2>&1; then
+  rg -n "DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*${TARGET_ATTEMPTS};" "$RETRY_JS" || true
+  [ -f "$RETRY_DTS" ] && rg -n "DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*${TARGET_ATTEMPTS};" "$RETRY_DTS" || true
+else
+  grep -nE "DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*${TARGET_ATTEMPTS};" "$RETRY_JS" || true
+  [ -f "$RETRY_DTS" ] && grep -nE "DEFAULT_MAX_ATTEMPTS[[:space:]]*=[[:space:]]*${TARGET_ATTEMPTS};" "$RETRY_DTS" || true
+fi
 
-log "完成，模型重試預設次數已設為 $TARGET_ATTEMPTS。"
+log "Done. DEFAULT_MAX_ATTEMPTS is set to $TARGET_ATTEMPTS."
