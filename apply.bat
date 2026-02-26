@@ -2,13 +2,15 @@
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "TARGET_ATTEMPTS=10000"
+set "EXIT_CODE=0"
 
-echo [gemini-patch] 偵測 npm 全域路徑...
+echo [gemini-patch] Detecting global npm root...
 for /f "usebackq delims=" %%i in (`npm root -g 2^>nul`) do set "NPM_ROOT=%%i"
 
 if not defined NPM_ROOT (
-  echo [gemini-patch] ERROR: 無法取得 npm 全域路徑，請先安裝 Node.js / npm。
-  exit /b 1
+  echo [gemini-patch] ERROR: Cannot detect global npm root. Install Node.js and npm first.
+  set "EXIT_CODE=1"
+  goto :finish
 )
 
 set "RETRY_JS=%NPM_ROOT%\@google\gemini-cli\node_modules\@google\gemini-cli-core\dist\src\utils\retry.js"
@@ -31,25 +33,61 @@ if not exist "%RETRY_DTS%" (
 :found_dts
 
 if not exist "%RETRY_JS%" (
-  echo [gemini-patch] ERROR: 找不到 retry.js，請確認已安裝 @google/gemini-cli。
-  exit /b 1
+  echo [gemini-patch] ERROR: retry.js not found. Please install @google/gemini-cli first.
+  set "EXIT_CODE=1"
+  goto :finish
 )
 
 copy /y "%RETRY_JS%" "%RETRY_JS%.bak" >nul
-powershell -NoProfile -Command "(Get-Content -Raw '%RETRY_JS%') -replace '(DEFAULT_MAX_ATTEMPTS\s*=\s*)\d+;','$1%TARGET_ATTEMPTS%;' | Set-Content -NoNewline '%RETRY_JS%'"
+powershell -NoProfile -Command "$p='%RETRY_JS%'; $c=[System.IO.File]::ReadAllText($p); if ($c -notmatch 'DEFAULT_MAX_ATTEMPTS\s*=\s*%TARGET_ATTEMPTS%;') { $c=[regex]::Replace($c,'(DEFAULT_MAX_ATTEMPTS\s*=\s*)\d+;','${1}%TARGET_ATTEMPTS%;') }; $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText($p,$c,$enc)"
+if errorlevel 1 (
+  echo [gemini-patch] ERROR: Failed to update %RETRY_JS%.
+  set "EXIT_CODE=1"
+  goto :finish
+)
 
 if exist "%RETRY_DTS%" (
   copy /y "%RETRY_DTS%" "%RETRY_DTS%.bak" >nul
-  powershell -NoProfile -Command "(Get-Content -Raw '%RETRY_DTS%') -replace '(DEFAULT_MAX_ATTEMPTS\s*=\s*)\d+;','$1%TARGET_ATTEMPTS%;' | Set-Content -NoNewline '%RETRY_DTS%'"
+  powershell -NoProfile -Command "$p='%RETRY_DTS%'; $c=[System.IO.File]::ReadAllText($p); if ($c -notmatch 'DEFAULT_MAX_ATTEMPTS\s*=\s*%TARGET_ATTEMPTS%;') { $c=[regex]::Replace($c,'(DEFAULT_MAX_ATTEMPTS\s*=\s*)\d+;','${1}%TARGET_ATTEMPTS%;') }; $enc=New-Object System.Text.UTF8Encoding($false); [System.IO.File]::WriteAllText($p,$c,$enc)"
+  if errorlevel 1 (
+    echo [gemini-patch] ERROR: Failed to update %RETRY_DTS%.
+    set "EXIT_CODE=1"
+    goto :finish
+  )
+) else (
+  echo [gemini-patch] Info: retry.d.ts not found. Skipped.
 )
 
 echo [gemini-patch] npm root -g: %NPM_ROOT%
-echo [gemini-patch] 已更新: %RETRY_JS%
-if exist "%RETRY_DTS%" echo [gemini-patch] 已更新: %RETRY_DTS%
+echo [gemini-patch] Updated: %RETRY_JS%
+if exist "%RETRY_DTS%" echo [gemini-patch] Updated: %RETRY_DTS%
 
-echo [gemini-patch] 驗證結果:
-powershell -NoProfile -Command "Select-String -Path '%RETRY_JS%' -Pattern 'DEFAULT_MAX_ATTEMPTS' | ForEach-Object { $_.Line }"
-if exist "%RETRY_DTS%" powershell -NoProfile -Command "Select-String -Path '%RETRY_DTS%' -Pattern 'DEFAULT_MAX_ATTEMPTS' | ForEach-Object { $_.Line }"
+echo [gemini-patch] Verification:
+powershell -NoProfile -Command "$m=Select-String -Path '%RETRY_JS%' -Pattern 'DEFAULT_MAX_ATTEMPTS\s*=\s*%TARGET_ATTEMPTS%;'; if ($m) { $m | ForEach-Object { $_.Line } } else { exit 1 }"
+if errorlevel 1 (
+  echo [gemini-patch] ERROR: Verification failed for %RETRY_JS%.
+  set "EXIT_CODE=1"
+  goto :finish
+)
 
-echo [gemini-patch] 完成，模型重試預設次數已設為 %TARGET_ATTEMPTS%。
-exit /b 0
+if exist "%RETRY_DTS%" (
+  powershell -NoProfile -Command "$m=Select-String -Path '%RETRY_DTS%' -Pattern 'DEFAULT_MAX_ATTEMPTS\s*=\s*%TARGET_ATTEMPTS%;'; if ($m) { $m | ForEach-Object { $_.Line } } else { exit 1 }"
+  if errorlevel 1 (
+    echo [gemini-patch] ERROR: Verification failed for %RETRY_DTS%.
+    set "EXIT_CODE=1"
+    goto :finish
+  )
+)
+
+echo [gemini-patch] Done. DEFAULT_MAX_ATTEMPTS is set to %TARGET_ATTEMPTS%.
+
+:finish
+echo.
+if "%EXIT_CODE%"=="0" (
+  echo [gemini-patch] Result: SUCCESS
+) else (
+  echo [gemini-patch] Result: FAILED ^(exit code: %EXIT_CODE%^)
+)
+echo [gemini-patch] Press any key to close this window...
+pause >nul
+exit /b %EXIT_CODE%

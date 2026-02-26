@@ -2,6 +2,12 @@
 
 一鍵把 Gemini CLI 內部 `DEFAULT_MAX_ATTEMPTS` 改成 `10000`。
 
+## 成功截圖
+
+腳本套用成功後，Gemini CLI 會使用較高的重試次數上限（例如 `Attempt 5/10000`）。
+
+![Gemini patch success screenshot](assets/success-screenshot.png)
+
 ## 檔案
 
 - `apply.sh`: Linux / macOS 使用
